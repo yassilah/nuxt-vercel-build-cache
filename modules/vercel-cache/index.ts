@@ -1,8 +1,9 @@
-import { defineNuxtModule, createResolver } from '@nuxt/kit'
+import { createResolver, defineNuxtModule } from '@nuxt/kit'
 import { defu } from 'defu'
-
+import { resolve } from 'pathe'
 export interface ModuleOptions {
     base: string
+    enabled: boolean
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -10,14 +11,15 @@ export default defineNuxtModule<ModuleOptions>({
         name: 'vercel-cache',
         configKey: 'vercelCache'
     },
-    defaults: {
-        base: process.env.NUXT_VERCEL_CACHE_BASE || './cache'
-    },
+    defaults: nuxt => ({
+        base: process.env.NUXT_VERCEL_CACHE_BASE || './cache',
+        enabled: !!process.env.VERCEL ?? nuxt.options.nitro.preset === 'vercel'
+    }),
     setup(options, nuxt) {
         nuxt.hook('nitro:config', config => {
-            // Check that the Nitro preset is vercel
-            if (config.preset === 'vercel') {
-                // Set the base storage of all routes to 'vercel'
+            if (options.enabled) {
+                const source = resolve(nuxt.options.rootDir, options.base)
+
                 config.routeRules = defu(config.routeRules, {
                     '/**': {
                         cache: {
@@ -26,34 +28,37 @@ export default defineNuxtModule<ModuleOptions>({
                     }
                 })
 
-                // Create the vercel storage driver
-                const { resolve } = createResolver(import.meta.url)
                 config.storage = defu(config.storage, {
                     vercel: {
-                        driver: resolve('runtime/driver.mjs'),
-                        base: options.base
+                        driver: createResolver(import.meta.url).resolve(
+                            'runtime/driver.mjs'
+                        ),
+                        src: source,
+                        target: options.base
                     }
-
                 })
 
                 nuxt.hook('nitro:init', nitro => {
+                    console.log('✅ Setting up cached output for Vercel.')
+
                     nitro.hooks.hook('prerender:routes', () => {
-                        // Not sure if there's another way to tell when Nuxt is pre-rendering?
                         process.env.NUXT_PRERENDER = 'true'
                     })
 
                     nitro.hooks.hook('compiled', async nitro => {
-                        // After nitro is done, move the folder containing all your cached routes
-                        // to the output folder to make it readable from Serveless functions
+                        console.log('🔥 Moving cache to output dir...')
                         const { renameSync } = await import('fs')
-                        const { resolve } = await import('pathe')
-                        const source = resolve(nuxt.options.rootDir, options.base)
-                        const target = resolve(nitro.options.output.serverDir, options.base)
+                        const target = resolve(
+                            nitro.options.output.serverDir,
+                            options.base
+                        )
+
+                        console.log('🚀', source, '->', target)
+
                         renameSync(source, target)
                     })
                 })
             }
         })
     }
-
 })
